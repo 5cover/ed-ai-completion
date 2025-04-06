@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+
+set -eu
+
+# ¤ - AI autocompletion for ed using Codestral (Mistral API)
+#
+# Usage: ¤ <file> [mode] [options]
+#
+# Modes:
+#   complete   Continue writing the file. Appends to file. (default)
+#   test       Generate test code for the file. Appends to file.
+#   fix        Fix errors or improve the file. Replaces the entire file.
+#   doc        Add comments to the code. Replaces the entire file.
+#   explain    Explain what the code does. Echoes result, does not modify file.
+#   review     Review the code and give feedback. Echoes result, does not modify file.
+#   degenerate Make the code slightly worse iteratively.
+#
+# Degenerate mode options:
+#   -n <number>        Maximum number of generations (default: 10)
+#   -o, --output <dir> Output directory for each worsened code file (default: degenerate_output)
+#
+# Environment:
+#   MISTRAL_API_KEY must be set to your Mistral API key.
+#
+# Example:
+#   ¤ hello.c complete
+#   ¤ hello.c degenerate -n 5 -o worsened_versions
+
+# todo:
+# - parse args using getopt
+# - test
+
+###########################
+# Helper Functions
+###########################
+
+# usage: Print usage instructions to STDOUT.
+usage() {
+    cat <<EOF
+Usage: $0 <file> [mode] [options]
+
+Modes:
+  complete   Continue writing the file. Appends to file. (default)
+  test       Generate test code for the file. Appends to file.
+  fix        Fix errors or improve the file. Replaces the entire file.
+  doc        Add comments to the code. Replaces the entire file.
+  explain    Explain what the code does. Echoes result, does not modify file.
+  review     Review the code and give feedback. Echoes result, does not modify file.
+  degenerate Make the code slightly worse iteratively.
+
+Degenerate mode options:
+  -n <number>        Maximum number of generations (default: 10)
+  -o, --output <dir> Output directory for each worsened code file (default: degenerate_output)
+
+Environment:
+  MISTRAL_API_KEY must be set.
+
+Example:
+  $0 hello.c complete
+  $0 hello.c degenerate -n 5 -o worsened_versions
+EOF
+}
+
+# version: Print version information.
+version() {
+    echo "¤ v1.0.0 — AI-powered ed assistant"
+}
+
+. src/query_api_mock.bash
+
+# do_append: Append the AI response to a file using ed.
+# Arguments:
+#   $1: File path.
+#   $2: Response text to append.
+do_append() {
+    local file="$1"
+    local response="$2"
+    local n_lines insert_cmd tmpfile
+
+    n_lines=$(wc -l <"$file")
+    if [[ "$n_lines" -eq 0 ]]; then
+        insert_cmd="a"
+    else
+        insert_cmd="${n_lines}a"
+    fi
+
+    tmpfile=$(mktemp) || {
+        echo "error: failed to create temporary file" >&2
+        exit 1
+    }
+
+    {
+        echo "$insert_cmd"
+        echo "$response"
+        echo "."
+    } >"$tmpfile"
+
+    ed -s "$file" <"$tmpfile"
+    rm -f "$tmpfile"
+    echo "AI output appended after line $n_lines in $file."
+}
+
+# do_replace: Replace the entire file with the AI response.
+# Arguments:
+#   $1: File path.
+#   $2: Response text to replace file content.
+do_replace() {
+    local file="$1"
+    local response="$2"
+    printf '%s\n' "$response" >"$file"
+    echo "File $file replaced with AI-generated version."
+}
+
+# do_echo: Echo the AI response to STDOUT.
+# Arguments:
+#   $1: Response text.
+do_echo() {
+    echo "$1"
+}
+
+# do_iterate: Iteratively apply a prompt to a file, saving each version
+# Arguments:
+#   $1: initial file
+#   $2: maximum generation count
+#   $3: output directory
+#   $4: task
+do_iterate() {
+    local initial_file="$1"
+    local max_generations="$2"
+    local output_dir="$3"
+    local task="$4"
+
+    local filename base_name extension
+
+    filename=$(basename "$initial_file")
+    if [[ "$filename" == *.* ]]; then
+        base_name="${filename%.*}"
+        extension="${filename##*.}"
+    else
+        base_name="$filename"
+        extension=""
+    fi
+
+    mkdir -p "$output_dir" || {
+        echo "error: failed to create output directory '$output_dir'" >&2
+        return 1
+    }
+
+    local i=1
+    local prev_file="$initial_file"
+
+    local response output_file
+
+    while [[ $i -le "$max_generations" ]]; do
+        echo -n "Generation $i: Processing file '$prev_file'..."
+
+        # keep the original filename
+        response=$(query_api <"$prev_file" "$file" "$task")
+
+        if [[ -n "$extension" ]]; then
+            output_file="$output_dir/${base_name}.${i}.${extension}"
+        else
+            output_file="$output_dir/${base_name}.${i}"
+        fi
+
+        echo "$response" >"$output_file"
+        echo " worsened code written to '$output_file'."
+
+        # Stop if no changes occurred compared to previous generation
+        if diff "$prev_file" "$output_file" >/dev/null; then
+            echo "No further degeneration occurred at generation $i. Stopping."
+            break
+        fi
+
+        prev_file="$output_file"
+        ((++i))
+    done
+
+    echo "Generation done. Wrote $((i-1)) files of questionable code to the '$output_dir' directory."
+}
+
+# Get the basename of a file without the extension
+# $1: original filename
+# output: basename without extension
+basename_noext() {
+    local s="${1##*/}"
+    echo "${s%.*}"
+}
+
+###########################
+# Main Script Flow
+###########################
+
+# Handle --help and --version
+if [[ $# -eq 0 ]] || [[ "$1" = "--help" ]] || [[ "$1" = "-h" ]]; then
+    usage
+    exit 0
+fi
+
+if [[ "$1" = "--version" ]]; then
+    version
+    exit 0
+fi
+
+# Check for required MISTRAL_API_KEY
+if [[ -z "${MISTRAL_API_KEY-}" ]]; then
+    echo "error: MISTRAL_API_KEY environment variable is not set." >&2
+    exit 1
+fi
+
+# Get main arguments: file and mode.
+file="$1"
+mode=${2-complete}
+shift 2 || true
+
+if ! [[ -f "$file" ]]; then
+    echo "error: File '$file' not found." >&2
+    exit 1
+fi
+
+# shellcheck disable=SC2094
+# justification: query_api simply includes the filename in the prompt, it doesn't write to it.
+
+# Select task and action based on mode.
+case "$mode" in
+complete)
+    do_append "$(query_api <"$file" "$file" "Respond only with source code, like you're continuing to write the file. Do not use any sort of formatting or code blocks of any kind. Just raw source code.")"
+    ;;
+test)
+    do_append "$(query_api <"$file" "$file" "Write test cases relevant to the code in this file. Return only the tests in raw code format, no explanations or markdown.")"
+    ;;
+fix)
+    do_replace "$(query_api <"$file" "$file" "Fix the file's code. Correct any syntax or logical issues. Respond with the entire corrected file, using raw source code only—no explanation or formatting.")"
+    ;;
+doc)
+    do_reaplce "$(query_api <"$file" "$file" "Add qualitative, helpful and consistent inline comments and documentation to the code. Use an idiomatic documentation syntax if available (such as docstring for Python, Doxygen for C...) Do not include explanations outside the source. Just the commented code.")"
+    ;;
+explain)
+    do_echo "$(query_api <"$file" "$file" "Summarize what this file does in a few lines. Since your output will be echoed to a terminal, format it accordingly for readability.")"
+    ;;
+review)
+    do_echo "$(query_api <"$file" "$file" "Review the code and provide a nitpicky list of improvements, potential bugs, formatting issues, and code style suggestions. Write as if you're a very detailed code reviewer. Do not output source code. Use a passive-aggressive and sarcastic, borderline cynical tone. Since your output will be echoed to a terminal, format it accordingly for readability.")"
+    ;;
+degenerate)
+    # Defaults for degenerate mode
+    max_generations=5
+
+    output_dir=$(basename_noext "$file").degenerated
+
+    # Parse additional degenerate options.
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        -n | --generations)
+            max_generations="$2"
+            shift 2
+            ;;
+        -o | --output)
+            output_dir="$2"
+            shift 2
+            ;;
+        *)
+            echo "error: unknown option $1" >&2
+            exit 1
+            ;;
+        esac
+    done
+
+    do_iterate "$file" "$max_generations" "$output_dir" 'Make this code slightly worse — subtly degrade its quality.
+
+You may introduce:
+- Mild inefficiencies
+- Poor or misleading naming
+- Formatting inconsistencies
+- Redundant or confusing comments
+- Outdated idioms or questionable practices
+- Small, non-breaking bugs or warnings
+- Ambiguity or unnecessary complexity
+
+However:
+- The core functionality must remain intact
+- The code must still compile/run without errors (warnings are fine)
+- Do not add explanations or commentary
+- Output only the full, degraded source code as plain text
+
+⚠️ Important: Output the code as **plain text only**. Do **not** wrap it in Markdown or add triple backticks.
+
+Make sure to change at least one thing about the code.
+'
+    ;;
+*)
+    echo "error: unsupported mode: $mode" >&2
+    exit 1
+    ;;
+esac
