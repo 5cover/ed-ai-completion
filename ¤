@@ -66,7 +66,7 @@ version() {
     echo "¤ v1.0.0 — AI-powered ed assistant"
 }
 
-. src/query_api_mock.bash
+. src/query_api.bash
 
 # do_append: Append the AI response to a file using ed.
 # Arguments:
@@ -224,16 +224,16 @@ fi
 # Select task and action based on mode.
 case "$mode" in
 complete)
-    do_append "$(query_api <"$file" "$file" "Respond only with source code, like you're continuing to write the file. Do not use any sort of formatting or code blocks of any kind. Just raw source code.")"
+    do_append "$file" "$(query_api <"$file" "$file" "Respond only with source code, like you're continuing to write the file. Do not use any sort of formatting or code blocks of any kind. Just raw source code.")"
     ;;
 test)
-    do_append "$(query_api <"$file" "$file" "Write test cases relevant to the code in this file. Return only the tests in raw code format, no explanations or markdown.")"
+    do_append "$file" "$(query_api <"$file" "$file" "Write test cases relevant to the code in this file. Return only the tests in raw code format, no explanations or markdown.")"
     ;;
 fix)
-    do_replace "$(query_api <"$file" "$file" "Fix the file's code. Correct any syntax or logical issues. Respond with the entire corrected file, using raw source code only—no explanation or formatting.")"
+    do_replace "$file" "$(query_api <"$file" "$file" "Fix the file's code. Correct any syntax or logical issues. Respond with the entire corrected file, using raw source code only—no explanation or formatting.")"
     ;;
 doc)
-    do_reaplce "$(query_api <"$file" "$file" "Add qualitative, helpful and consistent inline comments and documentation to the code. Use an idiomatic documentation syntax if available (such as docstring for Python, Doxygen for C...) Do not include explanations outside the source. Just the commented code.")"
+    do_replace "$file" "$(query_api <"$file" "$file" "Add qualitative, helpful and consistent inline comments and documentation to the code. Use an idiomatic documentation syntax if available (such as docstring for Python, Doxygen for C...) Do not include explanations outside the source. Just the commented code.")"
     ;;
 explain)
     do_echo "$(query_api <"$file" "$file" "Summarize what this file does in a few lines. Since your output will be echoed to a terminal, format it accordingly for readability.")"

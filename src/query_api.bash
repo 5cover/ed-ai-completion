@@ -39,7 +39,7 @@ EOF
     )
 
     local api_response
-    api_response=$(curl --no-progress-meter --location "https://api.mistral.ai/v1/chat/completions" \
+    api_response=$(curl --no-progress-meter --location "https://codestral.mistral.ai/v1/chat/completions" \
         --header 'Content-Type: application/json' \
         --header 'Accept: application/json' \
         --header "Authorization: Bearer $MISTRAL_API_KEY" \
